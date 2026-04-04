@@ -490,7 +490,7 @@ FORMATO:
       ? `Contexto previo (usá las mismas letras de hablante):\n${ctx}\n\nTranscribí el nuevo audio con la misma asignación.`
       : 'Transcribí el audio identificando cada hablante con letras A, B, C, D.';
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch('https://transcriptor-proxy.videotazmania1.workers.dev/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
