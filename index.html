@@ -541,4 +541,126 @@ FORMATO:
 
   } catch (err) {
     console.error(err);
-    const skip = ['Could not process','Unable to pr
+    const skip = ['Could not process','Unable to process','audio'];
+    if (!skip.some(s => err.message?.includes(s))) {
+      showToast('Error: ' + (err.message || 'desconocido'));
+    }
+  } finally {
+    processing.classList.remove('visible');
+  }
+}
+
+// ── Recording ─────────────────────────────────────────────────────────
+async function startRecording() {
+  // Check API availability
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showToast('Tu navegador no soporta acceso al micrófono'); return;
+  }
+
+  try {
+    // Request permission explicitly first
+    const perm = await navigator.permissions.query({ name: 'microphone' }).catch(() => null);
+    if (perm && perm.state === 'denied') {
+      showToast('Micrófono bloqueado — habilitalo en Configuración del celu');
+      return;
+    }
+
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  } catch (err) {
+    console.error('Mic error:', err.name, err.message);
+    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      showToast('Permiso denegado — habilitá el micrófono en Chrome');
+    } else if (err.name === 'NotFoundError') {
+      showToast('No se encontró micrófono en el dispositivo');
+    } else if (err.name === 'NotReadableError') {
+      showToast('Micrófono en uso por otra app');
+    } else {
+      showToast('Error de micrófono: ' + err.name);
+    }
+    return;
+  }
+
+  const ctx = new AudioContext();
+  const src = ctx.createMediaStreamSource(stream);
+  analyser  = ctx.createAnalyser();
+  analyser.fftSize = 256;
+  src.connect(analyser);
+  const arr = new Uint8Array(analyser.frequencyBinCount);
+  bars.forEach(b => b.classList.add('active'));
+  animateWave(arr);
+
+  const mime    = getSupportedMime();
+  mediaRecorder = new MediaRecorder(stream, mime ? { mimeType:mime } : {});
+  currentChunks = [];
+  isRecording   = true;
+  btnRecord.classList.add('recording');
+  setStatus('grabando', true);
+  renderAll();
+
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data?.size > 0) { currentChunks.push(e.data); audioChunks.push(e.data); }
+  };
+
+  chunkInterval = setInterval(async () => {
+    if (!currentChunks.length) return;
+    const blob = new Blob(currentChunks, { type: mime || 'audio/webm' });
+    currentChunks = [];
+    await transcribeChunk(blob);
+  }, CHUNK_MS);
+
+  mediaRecorder.start(1000);
+}
+
+async function stopRecording() {
+  if (!mediaRecorder) return;
+  clearInterval(chunkInterval); chunkInterval = null;
+
+  isRecording = false;
+  btnRecord.classList.remove('recording');
+  setStatus('procesando...', false);
+  bars.forEach(b => b.classList.remove('active'));
+  stopWaveAnim(); analyser = null;
+
+  await new Promise(res => { mediaRecorder.onstop = res; mediaRecorder.stop(); });
+  stream?.getTracks().forEach(t => t.stop());
+
+  // Transcribe remaining
+  if (currentChunks.length) {
+    const mime = getSupportedMime();
+    const blob = new Blob(currentChunks, { type: mime || 'audio/webm' });
+    currentChunks = [];
+    await transcribeChunk(blob);
+  }
+
+  audioChunks = [];
+  setStatus('listo', false);
+  renderAll();
+}
+
+// ── Events ────────────────────────────────────────────────────────────
+btnRecord.addEventListener('click', () => {
+  if (isRecording) stopRecording(); else startRecording();
+});
+
+btnClear.addEventListener('click', () => {
+  if (isRecording) return;
+  turns = []; audioChunks = []; currentChunks = [];
+  detectedSpeakers.clear(); updateLegend(); renderAll();
+});
+
+btnCopy.addEventListener('click', () => {
+  if (!turns.length) { showToast('No hay texto para copiar'); return; }
+  const txt = turns.map(t => `[${SPEAKERS[t.speaker]?.label || '?'}] ${t.text}`).join('\n');
+  navigator.clipboard.writeText(txt).then(() => {
+    btnCopy.textContent = '✓ listo';
+    btnCopy.classList.add('success');
+    setTimeout(() => { btnCopy.textContent = 'copiar'; btnCopy.classList.remove('success'); }, 2000);
+  }).catch(() => showToast('No se pudo copiar'));
+});
+
+// ── Init ──────────────────────────────────────────────────────────────
+updateLegend();
+renderAll();
+</script>
+</body>
+</html>
