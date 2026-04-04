@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Transcriptor</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;600;700;800&display=swap');
+
+  :root {
+    --bg: #0a0a0f;
+    --surface: #111118;
+    --accent: #7c5cfc;
+    --accent2: #c084fc;
+    --live: #22d3a8;
+    --live-dim: rgba(34,211,168,0.10);
+    --text: #e8e6f0;
+    --muted: #6b6880;
+    --border: rgba(124,92,252,0.18);
+
+    --spk-A: #7c5cfc;
+    --spk-A-dim: rgba(124,92,252,0.10);
+    --spk-B: #f59e42;
+    --spk-B-dim: rgba(245,158,66,0.10);
+    --spk-C: #22d3a8;
+    --spk-C-dim: rgba(34,211,168,0.10);
+    --spk-D: #f472b6;
+    --spk-D-dim: rgba(244,114,182,0.10);
+    --spk-U: #6b6880;
+    --spk-U-dim: rgba(107,104,128,0.10);
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+
+  body {
+    font-family: 'DM Mono', monospace;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100dvh;
+    display: flex; flex-direction: column;
+    overflow: hidden; position: fixed;
+    width: 100%; height: 100dvh;
+  }
+
+  body::before {
+    content:''; position:fixed; top:-30%; left:-20%; width:70%; height:70%;
+    background:radial-gradient(ellipse, rgba(124,92,252,0.07) 0%, transparent 70%);
+    pointer-events:none; z-index:0;
+  }
+  body::after {
+    content:''; position:fixed; bottom:-20%; right:-20%; width:60%; height:60%;
+    background:radial-gradient(ellipse, rgba(192,132,252,0.05) 0%, transparent 70%);
+    pointer-events:none; z-index:0;
+  }
+
+  .header {
+    position:relative; z-index:10;
+    padding:13px 16px 11px;
+    display:flex; align-items:center; justify-content:space-between;
+    border-bottom:1px solid var(--border);
+    background:rgba(10,10,15,0.88);
+    backdrop-filter:blur(20px);
+    flex-shrink:0; gap:10px;
+  }
+
+  .logo {
+    font-family:'Syne',sans-serif; font-weight:800; font-size:16px;
+    letter-spacing:-0.5px;
+    background:linear-gradient(135deg,var(--accent) 0%,var(--accent2) 100%);
+    -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+    background-clip:text; flex-shrink:0;
+  }
+
+  .legend {
+    display:flex; align-items:center; gap:5px; flex-wrap:wrap;
+    justify-content:flex-end; flex:1; min-width:0;
+  }
+
+  .legend-chip {
+    display:flex; align-items:center; gap:4px;
+    font-size:9px; letter-spacing:0.07em; text-transform:uppercase;
+    padding:3px 7px; border-radius:100px; border:1px solid transparent;
+    opacity:0.3; transition:opacity 0.4s, transform 0.2s;
+  }
+  .legend-chip.active { opacity:1; transform:scale(1.03); }
+  .legend-dot { width:5px; height:5px; border-radius:50%; flex-shrink:0; }
+
+  .chip-A { background:var(--spk-A-dim); border-color:rgba(124,92,252,0.35); color:var(--spk-A); }
+  .chip-B { background:var(--spk-B-dim); border-color:rgba(245,158,66,0.35);  color:var(--spk-B); }
+  .chip-C { background:var(--spk-C-dim); border-color:rgba(34,211,168,0.35);  color:var(--spk-C); }
+  .chip-D { background:var(--spk-D-dim); border-color:rgba(244,114,182,0.35); color:var(--spk-D); }
+
+  .status-row {
+    position:relative; z-index:10;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:7px 16px;
+    border-bottom:1px solid rgba(124,92,252,0.07);
+    flex-shrink:0;
+  }
+
+  .status-pill {
+    display:flex; align-items:center; gap:5px;
+    font-size:10px; letter-spacing:0.08em; text-transform:uppercase;
+    color:var(--muted); background:var(--surface);
+    border:1px solid var(--border); padding:4px 10px; border-radius:100px;
+    transition:all 0.3s;
+  }
+  .status-pill.live { color:var(--live); border-color:rgba(34,211,168,0.3); background:var(--live-dim); }
+
+  .status-dot { width:5px; height:5px; border-radius:50%; background:var(--muted); transition:all 0.3s; }
+  .status-pill.live .status-dot {
+    background:var(--live); box-shadow:0 0 6px var(--live);
+    animation:pdot 1.2s ease-in-out infinite;
+  }
+  @keyframes pdot { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.6)} }
+
+  .processing {
+    display:flex; align-items:center; gap:5px;
+    font-size:10px; letter-spacing:0.08em; text-transform:uppercase;
+    color:var(--accent2); opacity:0; transition:opacity 0.3s;
+  }
+  .processing.visible { opacity:1; }
+  .proc-dots span { display:inline-block; animation:bdot 1s ease-in-out infinite; }
+  .proc-dots span:nth-child(2){animation-delay:.15s}
+  .proc-dots span:nth-child(3){animation-delay:.30s}
+  @keyframes bdot{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+
+  .waveform-container {
+    position:relative; z-index:10;
+    display:flex; align-items:center; justify-content:center;
+    gap:2px; height:56px; padding:0 16px; flex-shrink:0;
+  }
+  .wave-bar {
+    width:2px; border-radius:2px; background:var(--accent);
+    opacity:0.22; height:5px; transition:height 0.08s ease; transform-origin:center;
+  }
+  .wave-bar.active { opacity:0.65; }
+
+  .transcript-wrapper {
+    flex:1; position:relative; z-index:10; overflow:hidden; display:flex; flex-direction:column;
+  }
+
+  .transcript-scroll {
+    flex:1; overflow-y:auto; padding:12px 14px 110px;
+    scroll-behavior:smooth; -webkit-overflow-scrolling:touch;
+  }
+  .transcript-scroll::-webkit-scrollbar{display:none}
+
+  .empty-state {
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    height:100%; gap:10px; color:var(--muted); text-align:center; padding:40px;
+  }
+  .empty-icon { font-size:42px; opacity:0.32; filter:grayscale(1); }
+  .empty-label { font-size:12px; line-height:1.7; letter-spacing:0.02em; }
+
+  .turn {
+    display:flex; gap:9px; margin-bottom:12px;
+    animation:si 0.28s cubic-bezier(0.16,1,0.3,1);
+  }
+  @keyframes si{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+
+  .turn-avatar {
+    width:26px; height:26px; border-radius:7px;
+    display:flex; align-items:center; justify-content:center;
+    font-family:'Syne',sans-serif; font-weight:700; font-size:11px;
+    flex-shrink:0; margin-top:2px;
+  }
+
+  .turn-body { flex:1; min-width:0; }
+
+  .turn-meta { display:flex; align-items:baseline; gap:7px; margin-bottom:4px; }
+  .turn-name { font-size:10px; font-weight:500; letter-spacing:0.05em; }
+  .turn-time { font-size:9px; color:var(--muted); letter-spacing:0.06em; }
+
+  .turn-bubble {
+    font-size:14px; line-height:1.72;
+    border-radius:3px 11px 11px 11px;
+    padding:9px 12px;
+    border-left:2.5px solid transparent;
+  }
+
+  .spk-A .turn-avatar { background:var(--spk-A-dim); color:var(--spk-A); border:1px solid rgba(124,92,252,0.28); }
+  .spk-A .turn-name   { color:var(--spk-A); }
+  .spk-A .turn-bubble { background:var(--spk-A-dim); border-left-color:var(--spk-A); }
+
+  .spk-B .turn-avatar { background:var(--spk-B-dim); color:var(--spk-B); border:1px solid rgba(245,158,66,0.28); }
+  .spk-B .turn-name   { color:var(--spk-B); }
+  .spk-B .turn-bubble { background:var(--spk-B-dim); border-left-color:var(--spk-B); }
+
+  .spk-C .turn-avatar { background:var(--spk-C-dim); color:var(--spk-C); border:1px solid rgba(34,211,168,0.28); }
+  .spk-C .turn-name   { color:var(--spk-C); }
+  .spk-C .turn-bubble { background:var(--spk-C-dim); border-left-color:var(--spk-C); }
+
+  .spk-D .turn-avatar { background:var(--spk-D-dim); color:var(--spk-D); border:1px solid rgba(244,114,182,0.28); }
+  .spk-D .turn-name   { color:var(--spk-D); }
+  .spk-D .turn-bubble { background:var(--spk-D-dim); border-left-color:var(--spk-D); }
+
+  .spk-U .turn-avatar { background:var(--spk-U-dim); color:var(--spk-U); border:1px solid rgba(107,104,128,0.28); }
+  .spk-U .turn-name   { color:var(--spk-U); }
+  .spk-U .turn-bubble { background:var(--spk-U-dim); border-left-color:var(--spk-U); }
+
+  .marker {
+    font-size:9px; letter-spacing:0.07em; text-transform:uppercase;
+    opacity:0.45; font-style:italic; margin:0 3px; color:inherit;
+  }
+
+  .turn-live .turn-bubble { background:var(--live-dim); border-left-color:var(--live); color:var(--live); }
+  .turn-live .turn-avatar  { background:var(--live-dim); color:var(--live); border:1px solid rgba(34,211,168,0.3); }
+  .turn-live .turn-name    { color:var(--live); }
+
+  .cursor {
+    display:inline-block; width:2px; height:0.88em;
+    background:var(--live); margin-left:2px; vertical-align:text-bottom;
+    animation:blink 0.8s step-end infinite;
+  }
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+
+  .bottom-bar {
+    position:fixed; bottom:0; left:0; right:0; z-index:20;
+    padding:12px 16px max(env(safe-area-inset-bottom),14px);
+    background:linear-gradient(to top,var(--bg) 55%,transparent);
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+  }
+
+  .btn-side {
+    font-family:'DM Mono',monospace; font-size:10px; letter-spacing:0.07em;
+    text-transform:uppercase; color:var(--muted); background:var(--surface);
+    border:1px solid var(--border); border-radius:100px; padding:11px 16px;
+    cursor:pointer; transition:all 0.2s; flex-shrink:0;
+  }
+  .btn-side:active{transform:scale(0.94)}
+  .btn-side:hover{color:var(--text);border-color:rgba(124,92,252,0.4)}
+  .btn-side.success{color:var(--live);border-color:rgba(34,211,168,0.4)}
+
+  .btn-record {
+    width:66px; height:66px; border-radius:50%; border:none;
+    cursor:pointer; position:relative; flex-shrink:0; background:transparent;
+    transition:transform 0.2s cubic-bezier(0.34,1.56,0.64,1);
+  }
+  .btn-record::before {
+    content:''; position:absolute; inset:0; border-radius:50%;
+    background:linear-gradient(135deg,var(--accent) 0%,var(--accent2) 100%);
+    box-shadow:0 4px 18px rgba(124,92,252,0.32); transition:all 0.3s;
+  }
+  .btn-record.recording::before {
+    background:linear-gradient(135deg,#fc5c5c 0%,#fc7c5c 100%);
+    animation:rp 1.5s ease-in-out infinite;
+  }
+  @keyframes rp{
+    0%,100%{box-shadow:0 0 0 5px rgba(252,92,92,0.12),0 0 20px rgba(252,92,92,0.25)}
+    50%{box-shadow:0 0 0 11px rgba(252,92,92,0.06),0 0 32px rgba(252,92,92,0.35)}
+  }
+  .btn-record:active{transform:scale(0.93)}
+  .btn-record-inner {
+    position:absolute; inset:50%; transform:translate(-50%,-50%);
+    width:22px; height:22px; border-radius:50%; background:white;
+    transition:all 0.3s cubic-bezier(0.34,1.56,0.64,1);
+  }
+  .btn-record.recording .btn-record-inner{border-radius:5px;width:17px;height:17px;}
+
+  .toast {
+    position:fixed; bottom:96px; left:50%;
+    transform:translateX(-50%) translateY(14px);
+    background:#1e1020; border:1px solid rgba(252,92,92,0.3);
+    color:#fc9c9c; font-size:11px; padding:8px 15px;
+    border-radius:100px; opacity:0; pointer-events:none;
+    transition:all 0.3s; white-space:nowrap; z-index:50;
+    max-width:88vw; text-align:center;
+  }
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <span class="logo">transcriptor</span>
+  <div class="legend">
+    <div class="legend-chip chip-A" id="chip-A"><div class="legend-dot" style="background:var(--spk-A)"></div>Habl. A</div>
+    <div class="legend-chip chip-B" id="chip-B"><div class="legend-dot" style="background:var(--spk-B)"></div>Habl. B</div>
+    <div class="legend-chip chip-C" id="chip-C"><div class="legend-dot" style="background:var(--spk-C)"></div>Habl. C</div>
+    <div class="legend-chip chip-D" id="chip-D"><div class="legend-dot" style="background:var(--spk-D)"></div>Habl. D</div>
+  </div>
+</div>
+
+<div class="status-row">
+  <div class="status-pill" id="statusPill">
+    <div class="status-dot"></div>
+    <span id="statusText">listo</span>
+  </div>
+  <div class="processing" id="processing">
+    <span>procesando</span>
+    <div class="proc-dots"><span>·</span><span>·</span><span>·</span></div>
+  </div>
+</div>
+
+<div class="waveform-container" id="waveform"></div>
+
+<div class="transcript-wrapper">
+  <div class="transcript-scroll" id="transcriptScroll">
+    <div class="empty-state" id="emptyState">
+      <div class="empty-icon">🎙️</div>
+      <div class="empty-label">Presioná el botón para<br>empezar a transcribir</div>
+    </div>
+  </div>
+</div>
+
+<div class="bottom-bar">
+  <button class="btn-side" id="btnClear">borrar</button>
+  <button class="btn-record" id="btnRecord"><div class="btn-record-inner"></div></button>
+  <button class="btn-side" id="btnCopy">copiar</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────
+const CHUNK_MS = 6000;
+const SPEAKERS = {
+  A: { label:'Habl. A' },
+  B: { label:'Habl. B' },
+  C: { label:'Habl. C' },
+  D: { label:'Habl. D' },
+  U: { label:'?' },
+};
+
+// ── State ─────────────────────────────────────────────────────────────
+let mediaRecorder = null;
+let audioChunks   = [];
+let currentChunks = [];
+let isRecording   = false;
+let turns         = [];
+let detectedSpeakers = new Set();
+let chunkInterval = null;
+let analyser      = null;
+let animFrame     = null;
+let stream        = null;
+
+// ── DOM ───────────────────────────────────────────────────────────────
+const btnRecord  = document.getElementById('btnRecord');
+const btnClear   = document.getElementById('btnClear');
+const btnCopy    = document.getElementById('btnCopy');
+const statusPill = document.getElementById('statusPill');
+const statusText = document.getElementById('statusText');
+const scroll     = document.getElementById('transcriptScroll');
+const emptyState = document.getElementById('emptyState');
+const processing = document.getElementById('processing');
+const toast      = document.getElementById('toast');
+const waveform   = document.getElementById('waveform');
+
+// ── Waveform ──────────────────────────────────────────────────────────
+const BAR_COUNT = 46;
+for (let i = 0; i < BAR_COUNT; i++) {
+  const b = document.createElement('div');
+  b.className = 'wave-bar';
+  waveform.appendChild(b);
+}
+const bars = waveform.querySelectorAll('.wave-bar');
+
+function animateWave(arr) {
+  if (!analyser) return;
+  animFrame = requestAnimationFrame(() => animateWave(arr));
+  analyser.getByteFrequencyData(arr);
+  const step = Math.floor(arr.length / BAR_COUNT);
+  bars.forEach((b, i) => {
+    b.style.height = Math.max(4, (arr[i * step] / 255) * 46) + 'px';
+  });
+}
+function stopWaveAnim() {
+  if (animFrame) cancelAnimationFrame(animFrame);
+  bars.forEach(b => b.style.height = '5px');
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────
+function setStatus(txt, live = false) {
+  statusText.textContent = txt;
+  statusPill.className = 'status-pill' + (live ? ' live' : '');
+}
+
+let toastTimer;
+function showToast(msg) {
+  toast.textContent = msg;
+  toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 3200);
+}
+
+function nowTime() {
+  return new Date().toLocaleTimeString('es-AR', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+}
+
+function blobToBase64(blob) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onloadend = () => res(r.result);
+    r.onerror = rej;
+    r.readAsDataURL(blob);
+  });
+}
+
+function getSupportedMime() {
+  for (const t of ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4','']) {
+    if (!t || MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return '';
+}
+
+function updateLegend() {
+  ['A','B','C','D'].forEach(s => {
+    document.getElementById('chip-' + s)?.classList.toggle('active', detectedSpeakers.has(s));
+  });
+}
+
+function formatText(text) {
+  return text.replace(/\[(interrumpe|solapado|inaudible|risas|pausa|overlap)\]/gi,
+    m => `<span class="marker">${m}</span>`);
+}
+
+// ── Render ────────────────────────────────────────────────────────────
+function renderAll() {
+  scroll.querySelectorAll('.turn,.empty-state').forEach(el => el.remove());
+
+  if (!turns.length && !isRecording) {
+    scroll.appendChild(emptyState);
+    return;
+  }
+
+  turns.forEach(t => scroll.appendChild(buildTurn(t)));
+
+  if (isRecording) {
+    const live = document.createElement('div');
+    live.className = 'turn turn-live';
+    live.id = 'liveTurn';
+    live.innerHTML = `
+      <div class="turn-avatar">●</div>
+      <div class="turn-body">
+        <div class="turn-meta"><span class="turn-name">escuchando</span></div>
+        <div class="turn-bubble"><span class="cursor"></span></div>
+      </div>`;
+    scroll.appendChild(live);
+  }
+
+  scroll.scrollTop = scroll.scrollHeight;
+}
+
+function buildTurn({ speaker, text, time }) {
+  const spk = SPEAKERS[speaker] || SPEAKERS.U;
+  const div = document.createElement('div');
+  div.className = `turn spk-${speaker}`;
+  div.innerHTML = `
+    <div class="turn-avatar">${speaker === 'U' ? '?' : speaker}</div>
+    <div class="turn-body">
+      <div class="turn-meta">
+        <span class="turn-name">${spk.label}</span>
+        <span class="turn-time">${time}</span>
+      </div>
+      <div class="turn-bubble">${formatText(text)}</div>
+    </div>`;
+  return div;
+}
+
+// ── Transcription ─────────────────────────────────────────────────────
+async function transcribeChunk(blob) {
+  if (blob.size < 800) return;
+  processing.classList.add('visible');
+
+  try {
+    const b64  = await blobToBase64(blob);
+    const data = b64.split(',')[1];
+    const mime = blob.type || 'audio/webm';
+
+    // Last N turns as diarization context
+    const ctx = turns.slice(-10)
+      .map(t => `${SPEAKERS[t.speaker]?.label || '?'}: ${t.text}`)
+      .join('\n');
+
+    const system = `Eres un transcriptor con diarización de hablantes. Hay entre 2 y 4 personas hablando y pueden interrumpirse o hablar al mismo tiempo.
+
+REGLAS:
+1. Identificá cada turno de habla y asigná letras: A, B, C, D. Usá las mismas letras que en el contexto previo.
+2. Si no podés identificar quién habla con confianza, usá "U" (desconocido).
+3. Marcá [interrumpe] cuando alguien corta a otro. Marcá [solapado] cuando dos voces se superponen.
+4. Transcribí exactamente, sin corregir ni resumir.
+5. Si algo es inaudible, escribí [inaudible].
+6. Respondé ÚNICAMENTE con un array JSON válido. Sin texto extra, sin markdown.
+
+FORMATO:
+[{"speaker":"A","text":"lo que dijo"},{"speaker":"B","text":"[interrumpe] pero yo..."}]`;
+
+    const userMsg = ctx
+      ? `Contexto previo (usá las mismas letras de hablante):\n${ctx}\n\nTranscribí el nuevo audio con la misma asignación.`
+      : 'Transcribí el audio identificando cada hablante con letras A, B, C, D.';
+
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1500,
+        system,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'document', source: { type:'base64', media_type:mime, data } },
+            { type: 'text', text: userMsg }
+          ]
+        }]
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || `HTTP ${res.status}`);
+    }
+
+    const json = await res.json();
+    const raw  = json.content?.find(c => c.type === 'text')?.text?.trim() || '';
+
+    let parsed;
+    try {
+      parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+    } catch {
+      console.warn('JSON parse failed:', raw.slice(0, 200));
+      return;
+    }
+
+    if (!Array.isArray(parsed) || !parsed.length) return;
+
+    const t = nowTime();
+    parsed.forEach(({ speaker, text }) => {
+      if (!text?.trim() || text.trim() === '...') return;
+      // Normalize speaker key
+      let key = String(speaker || 'U').toUpperCase()
+        .replace(/HABLANTE\s*/,'').replace(/SPEAKER\s*/,'').trim();
+      if (!['A','B','C','D'].includes(key)) key = 'U';
+      turns.push({ speaker: key, text: text.trim(), time: t });
+      if (key !== 'U') detectedSpeakers.add(key);
+    });
+
+    updateLegend();
+    renderAll();
+
+  } catch (err) {
+    console.error(err);
+    const skip = ['Could not process','Unable to pr
