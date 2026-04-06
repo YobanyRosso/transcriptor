@@ -141,7 +141,7 @@
   }
 
   .transcript-scroll {
-    flex:1; overflow-y:auto; padding:12px 14px 110px;
+    flex:1; overflow-y:auto; padding:12px 14px 130px;
     scroll-behavior:smooth; -webkit-overflow-scrolling:touch;
   }
   .transcript-scroll::-webkit-scrollbar{display:none}
@@ -217,16 +217,16 @@
 
   .bottom-bar {
     position:fixed; bottom:0; left:0; right:0; z-index:20;
-    padding:12px 16px max(env(safe-area-inset-bottom),14px);
-    background:linear-gradient(to top,var(--bg) 55%,transparent);
-    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:10px 16px max(env(safe-area-inset-bottom),12px);
+    background:linear-gradient(to top,var(--bg) 60%,transparent);
+    display:flex; flex-direction:column; align-items:center; gap:8px;
   }
-
+  .btn-row { display:flex; align-items:center; justify-content:center; gap:8px; width:100%; }
   .btn-side {
     font-family:'DM Mono',monospace; font-size:10px; letter-spacing:0.07em;
     text-transform:uppercase; color:var(--muted); background:var(--surface);
-    border:1px solid var(--border); border-radius:100px; padding:11px 16px;
-    cursor:pointer; transition:all 0.2s; flex-shrink:0;
+    border:1px solid var(--border); border-radius:100px; padding:9px 14px;
+    cursor:pointer; transition:all 0.2s; flex:1; max-width:110px; text-align:center;
   }
   .btn-side:active{transform:scale(0.94)}
   .btn-side:hover{color:var(--text);border-color:rgba(124,92,252,0.4)}
@@ -288,7 +288,7 @@
     <span id="statusText">listo</span>
   </div>
   <div class="processing" id="processing">
-    <span>procesando</span>
+    <span id="procLabel">procesando</span>
     <div class="proc-dots"><span>·</span><span>·</span><span>·</span></div>
   </div>
 </div>
@@ -305,16 +305,23 @@
 </div>
 
 <div class="bottom-bar">
-  <button class="btn-side" id="btnClear">borrar</button>
+  <div class="btn-row">
+    <button class="btn-side" id="btnClear">borrar</button>
+    <button class="btn-side" id="btnCopy">copiar</button>
+    <button class="btn-side" id="btnExport">exportar</button>
+  </div>
   <button class="btn-record" id="btnRecord"><div class="btn-record-inner"></div></button>
-  <button class="btn-side" id="btnCopy">copiar</button>
 </div>
 
 <div class="toast" id="toast"></div>
 
 <script>
 // ── Config ────────────────────────────────────────────────────────────
-const CHUNK_MS = 6000;
+const CHUNK_MS   = 6000;
+const WORKER_URL = 'https://transcriptor-proxy.videotazmania1.workers.dev/';
+const MODEL      = 'claude-sonnet-4-6';
+const MAX_RETRY  = 1;
+
 const SPEAKERS = {
   A: { label:'Habl. A' },
   B: { label:'Habl. B' },
@@ -324,26 +331,29 @@ const SPEAKERS = {
 };
 
 // ── State ─────────────────────────────────────────────────────────────
-let mediaRecorder = null;
-let audioChunks   = [];
-let currentChunks = [];
-let isRecording   = false;
-let turns         = [];
+let mediaRecorder  = null;
+let currentChunks  = [];   // chunks for next send (no global audioChunks accumulation)
+let isRecording    = false;
+let turns          = [];
 let detectedSpeakers = new Set();
-let chunkInterval = null;
-let analyser      = null;
-let animFrame     = null;
-let stream        = null;
+let chunkInterval  = null;
+let analyser       = null;
+let animFrame      = null;
+let stream         = null;
+let chunkQueue     = Promise.resolve(); // sequential queue — no parallel requests
+let chunkCounter   = 0;
 
 // ── DOM ───────────────────────────────────────────────────────────────
 const btnRecord  = document.getElementById('btnRecord');
 const btnClear   = document.getElementById('btnClear');
 const btnCopy    = document.getElementById('btnCopy');
+const btnExport  = document.getElementById('btnExport');
 const statusPill = document.getElementById('statusPill');
 const statusText = document.getElementById('statusText');
 const scroll     = document.getElementById('transcriptScroll');
 const emptyState = document.getElementById('emptyState');
 const processing = document.getElementById('processing');
+const procLabel  = document.getElementById('procLabel');
 const toast      = document.getElementById('toast');
 const waveform   = document.getElementById('waveform');
 
@@ -442,6 +452,15 @@ function renderAll() {
   scroll.scrollTop = scroll.scrollHeight;
 }
 
+function appendTurn(turn) {
+  // Append a single turn without re-rendering everything
+  const live = document.getElementById('liveTurn');
+  const el = buildTurn(turn);
+  if (live) scroll.insertBefore(el, live);
+  else scroll.appendChild(el);
+  scroll.scrollTop = scroll.scrollHeight;
+}
+
 function buildTurn({ speaker, text, time }) {
   const spk = SPEAKERS[speaker] || SPEAKERS.U;
   const div = document.createElement('div');
@@ -458,20 +477,48 @@ function buildTurn({ speaker, text, time }) {
   return div;
 }
 
-// ── Transcription ─────────────────────────────────────────────────────
-async function transcribeChunk(blob) {
+// ── API call with retry ───────────────────────────────────────────────
+async function callAPI(payload, attempt = 0) {
+  const res = await fetch(WORKER_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    const msg = err.error?.message || `HTTP ${res.status}`;
+    // Retry once on 5xx errors
+    if (res.status >= 500 && attempt < MAX_RETRY) {
+      await new Promise(r => setTimeout(r, 1500));
+      return callAPI(payload, attempt + 1);
+    }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+// ── Transcribe one chunk (always runs sequentially via queue) ─────────
+async function transcribeChunk(blob, label) {
   if (blob.size < 800) return;
+
   processing.classList.add('visible');
+  if (procLabel) procLabel.textContent = label;
 
   try {
     const b64  = await blobToBase64(blob);
     const data = b64.split(',')[1];
     const mime = blob.type || 'audio/webm';
 
-    // Last N turns as diarization context
-    const ctx = turns.slice(-10)
-      .map(t => `${SPEAKERS[t.speaker]?.label || '?'}: ${t.text}`)
-      .join('\n');
+    // Context: last 10 turns as structured JSON string (safe for multi-line text)
+    const ctxTurns = turns.slice(-10).map(t => ({
+      speaker: t.speaker,
+      label: SPEAKERS[t.speaker]?.label || '?',
+      text: t.text
+    }));
+    const ctxStr = ctxTurns.length
+      ? JSON.stringify(ctxTurns)
+      : null;
 
     const system = `Eres un transcriptor con diarización de hablantes. Hay entre 2 y 4 personas hablando y pueden interrumpirse o hablar al mismo tiempo.
 
@@ -481,39 +528,29 @@ REGLAS:
 3. Marcá [interrumpe] cuando alguien corta a otro. Marcá [solapado] cuando dos voces se superponen.
 4. Transcribí exactamente, sin corregir ni resumir.
 5. Si algo es inaudible, escribí [inaudible].
-6. Respondé ÚNICAMENTE con un array JSON válido. Sin texto extra, sin markdown.
+6. Respondé ÚNICAMENTE con un array JSON válido. Sin texto extra, sin markdown, sin bloques de código.
 
-FORMATO:
+FORMATO EXACTO (array JSON):
 [{"speaker":"A","text":"lo que dijo"},{"speaker":"B","text":"[interrumpe] pero yo..."}]`;
 
-    const userMsg = ctx
-      ? `Contexto previo (usá las mismas letras de hablante):\n${ctx}\n\nTranscribí el nuevo audio con la misma asignación.`
+    const userMsg = ctxStr
+      ? `Contexto previo (JSON con turnos anteriores — usá las mismas letras):\n${ctxStr}\n\nTranscribí el nuevo audio manteniendo esa asignación de hablantes.`
       : 'Transcribí el audio identificando cada hablante con letras A, B, C, D.';
 
-    const res = await fetch('https://transcriptor-proxy.videotazmania1.workers.dev/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1500,
-        system,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'document', source: { type:'base64', media_type:mime, data } },
-            { type: 'text', text: userMsg }
-          ]
-        }]
-      })
+    const json = await callAPI({
+      model: MODEL,
+      max_tokens: 1500,
+      system,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'document', source: { type:'base64', media_type:mime, data } },
+          { type: 'text', text: userMsg }
+        ]
+      }]
     });
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `HTTP ${res.status}`);
-    }
-
-    const json = await res.json();
-    const raw  = json.content?.find(c => c.type === 'text')?.text?.trim() || '';
+    const raw = json.content?.find(c => c.type === 'text')?.text?.trim() || '';
 
     let parsed;
     try {
@@ -528,50 +565,54 @@ FORMATO:
     const t = nowTime();
     parsed.forEach(({ speaker, text }) => {
       if (!text?.trim() || text.trim() === '...') return;
-      // Normalize speaker key
       let key = String(speaker || 'U').toUpperCase()
         .replace(/HABLANTE\s*/,'').replace(/SPEAKER\s*/,'').trim();
       if (!['A','B','C','D'].includes(key)) key = 'U';
-      turns.push({ speaker: key, text: text.trim(), time: t });
+      const turn = { speaker: key, text: text.trim(), time: t };
+      turns.push(turn);
       if (key !== 'U') detectedSpeakers.add(key);
+      appendTurn(turn);
     });
 
     updateLegend();
-    renderAll();
 
   } catch (err) {
     console.error(err);
-    const skip = ['Could not process','Unable to process','audio'];
+    const skip = ['Could not process','Unable to process'];
     if (!skip.some(s => err.message?.includes(s))) {
-      showToast('Error: ' + (err.message || 'desconocido'));
+      showToast('Error seg. ' + label + ': ' + (err.message || 'desconocido'));
     }
   } finally {
     processing.classList.remove('visible');
+    if (procLabel) procLabel.textContent = 'procesando';
   }
+}
+
+// Enqueue a chunk — guarantees sequential execution
+function enqueueChunk(blob) {
+  chunkCounter++;
+  const label = `#${chunkCounter}`;
+  chunkQueue = chunkQueue.then(() => transcribeChunk(blob, label));
 }
 
 // ── Recording ─────────────────────────────────────────────────────────
 async function startRecording() {
-  // Check API availability
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     showToast('Tu navegador no soporta acceso al micrófono'); return;
   }
 
   try {
-    // Request permission explicitly first
     const perm = await navigator.permissions.query({ name: 'microphone' }).catch(() => null);
     if (perm && perm.state === 'denied') {
-      showToast('Micrófono bloqueado — habilitalo en Configuración del celu');
-      return;
+      showToast('Micrófono bloqueado — habilitalo en Configuración'); return;
     }
-
     stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   } catch (err) {
     console.error('Mic error:', err.name, err.message);
     if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-      showToast('Permiso denegado — habilitá el micrófono en Chrome');
+      showToast('Permiso denegado — habilitá el micrófono en el navegador');
     } else if (err.name === 'NotFoundError') {
-      showToast('No se encontró micrófono en el dispositivo');
+      showToast('No se encontró micrófono');
     } else if (err.name === 'NotReadableError') {
       showToast('Micrófono en uso por otra app');
     } else {
@@ -592,20 +633,23 @@ async function startRecording() {
   const mime    = getSupportedMime();
   mediaRecorder = new MediaRecorder(stream, mime ? { mimeType:mime } : {});
   currentChunks = [];
+  chunkCounter  = 0;
+  chunkQueue    = Promise.resolve();
   isRecording   = true;
   btnRecord.classList.add('recording');
   setStatus('grabando', true);
   renderAll();
 
   mediaRecorder.ondataavailable = (e) => {
-    if (e.data?.size > 0) { currentChunks.push(e.data); audioChunks.push(e.data); }
+    if (e.data?.size > 0) currentChunks.push(e.data);
   };
 
-  chunkInterval = setInterval(async () => {
+  // Every CHUNK_MS seconds, enqueue the accumulated audio
+  chunkInterval = setInterval(() => {
     if (!currentChunks.length) return;
     const blob = new Blob(currentChunks, { type: mime || 'audio/webm' });
     currentChunks = [];
-    await transcribeChunk(blob);
+    enqueueChunk(blob);
   }, CHUNK_MS);
 
   mediaRecorder.start(1000);
@@ -617,24 +661,42 @@ async function stopRecording() {
 
   isRecording = false;
   btnRecord.classList.remove('recording');
-  setStatus('procesando...', false);
+  setStatus('finalizando...', false);
   bars.forEach(b => b.classList.remove('active'));
   stopWaveAnim(); analyser = null;
 
   await new Promise(res => { mediaRecorder.onstop = res; mediaRecorder.stop(); });
   stream?.getTracks().forEach(t => t.stop());
 
-  // Transcribe remaining
+  // Enqueue any remaining audio
   if (currentChunks.length) {
     const mime = getSupportedMime();
     const blob = new Blob(currentChunks, { type: mime || 'audio/webm' });
     currentChunks = [];
-    await transcribeChunk(blob);
+    enqueueChunk(blob);
   }
 
-  audioChunks = [];
+  // Wait for all queued chunks to finish
+  await chunkQueue;
+
   setStatus('listo', false);
-  renderAll();
+  // Remove live indicator
+  document.getElementById('liveTurn')?.remove();
+}
+
+// ── Export as .txt ────────────────────────────────────────────────────
+function exportTxt() {
+  if (!turns.length) { showToast('No hay texto para exportar'); return; }
+  const lines = turns.map(t =>
+    `[${t.time}] ${SPEAKERS[t.speaker]?.label || '?'}: ${t.text}`
+  ).join('\n');
+  const blob = new Blob([lines], { type: 'text/plain;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url;
+  a.download = `transcripcion-${new Date().toISOString().slice(0,16).replace('T','-')}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ── Events ────────────────────────────────────────────────────────────
@@ -644,7 +706,7 @@ btnRecord.addEventListener('click', () => {
 
 btnClear.addEventListener('click', () => {
   if (isRecording) return;
-  turns = []; audioChunks = []; currentChunks = [];
+  turns = []; currentChunks = [];
   detectedSpeakers.clear(); updateLegend(); renderAll();
 });
 
@@ -657,6 +719,8 @@ btnCopy.addEventListener('click', () => {
     setTimeout(() => { btnCopy.textContent = 'copiar'; btnCopy.classList.remove('success'); }, 2000);
   }).catch(() => showToast('No se pudo copiar'));
 });
+
+btnExport?.addEventListener('click', exportTxt);
 
 // ── Init ──────────────────────────────────────────────────────────────
 updateLegend();
