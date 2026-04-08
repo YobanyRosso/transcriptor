@@ -429,7 +429,7 @@
 <script>
 // ── Config ────────────────────────────────────────────────────────────
 const WORKER_URL  = 'https://transcriptor-proxy.videotazmania1.workers.dev/';
-const CHUNK_MS    = 6000;
+const CHUNK_MS    = 8000;  // 8s chunks = more content for Groq
 const DB_NAME     = 'transcriptor-v1';
 const DB_STORE    = 'sessions';
 
@@ -620,7 +620,7 @@ function appendBlock(block) {
 
 // ── Transcription via Groq Whisper ────────────────────────────────────
 async function transcribeChunk(blob, segNum) {
-  if (blob.size < 1000) return;
+  if (blob.size < 8000) return;  // skip chunks under ~8KB (silence/too short)
   procFill.classList.add('active');
 
   // Show interim placeholder
@@ -663,7 +663,13 @@ async function transcribeChunk(blob, segNum) {
 
   } catch (err) {
     console.error('Transcription error:', err);
-    showToast('Error: ' + (err.message || 'desconocido'), true);
+    const silent = ['could not process', 'is it a valid', 'no audio', 'audio file'];
+    if (!silent.some(s => (err.message || '').toLowerCase().includes(s))) {
+      showToast('Error: ' + (err.message || 'desconocido'), true);
+    }
+    // Reset interim on error
+    const interimErr = document.getElementById('interimBlock');
+    if (interimErr) interimErr.querySelector('.interim-bubble').innerHTML = '<span class="cursor"></span>';
   } finally {
     procFill.classList.remove('active');
   }
