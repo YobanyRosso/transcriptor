@@ -431,11 +431,20 @@ function buildRecognition() {
   const r = new SpeechRecognition();
   r.continuous     = true;
   r.interimResults = true;
-  r.lang           = 'es-AR';   // Spanish Argentina — change as needed
+  r.lang           = 'es';      // broad Spanish — works on most Android
   r.maxAlternatives = 1;
+
+  r.onaudiostart = () => {
+    setStatus('grabando', true);
+    bars.forEach(b => b.classList.add('active'));
+  };
 
   r.onstart = () => {
     setStatus('grabando', true);
+  };
+
+  r.onspeechstart = () => {
+    setStatus('escuchando...', true);
   };
 
   r.onresult = (e) => {
@@ -453,12 +462,26 @@ function buildRecognition() {
   };
 
   r.onerror = (e) => {
-    if (e.error === 'no-speech') return; // silently ignore
-    if (e.error === 'not-allowed') {
+    console.warn('Speech error:', e.error);
+    if (e.error === 'no-speech') return;
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
       showToast('Micrófono bloqueado — habilitalo en Chrome');
       stopRecording(); return;
     }
-    console.warn('Speech error:', e.error);
+    if (e.error === 'network') {
+      showToast('Sin conexión — la Web Speech API requiere internet');
+      return;
+    }
+    if (e.error === 'language-not-supported') {
+      showToast('Idioma no soportado — probando con es-ES...');
+      recognition.lang = 'es-ES';
+      return;
+    }
+    if (e.error === 'audio-capture') {
+      showToast('No se pudo capturar audio — verificá el micrófono');
+      stopRecording(); return;
+    }
+    showToast('Error: ' + e.error);
   };
 
   r.onend = () => {
@@ -517,6 +540,12 @@ async function startRecording() {
 
   try {
     recognition.start();
+    // Diagnostic: if no result in 4s, warn user
+    setTimeout(() => {
+      if (isRecording && !blocks.length && !interimText) {
+        showToast('Hablá cerca del micrófono — esperando audio...');
+      }
+    }, 4000);
   } catch (err) {
     showToast('Error al iniciar: ' + err.message);
     stopRecording(); return;
