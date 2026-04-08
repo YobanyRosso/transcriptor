@@ -429,7 +429,7 @@
 <script>
 // ── Config ────────────────────────────────────────────────────────────
 const WORKER_URL  = 'https://transcriptor-proxy.videotazmania1.workers.dev/';
-const CHUNK_MS    = 8000;  // 8s chunks = more content for Groq
+const CHUNK_MS    = 15000; // 15s chunks = better context for Whisper
 const DB_NAME     = 'transcriptor-v1';
 const DB_STORE    = 'sessions';
 
@@ -518,10 +518,26 @@ function blobToBase64(blob) {
 }
 
 function getSupportedMime() {
-  for (const t of ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4','']) {
+  // mp4/aac has best Groq compatibility on Android
+  // webm/opus is best on desktop Chrome
+  const types = [
+    'audio/mp4;codecs=mp4a.40.2',
+    'audio/mp4',
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    '',
+  ];
+  for (const t of types) {
     if (!t || MediaRecorder.isTypeSupported(t)) return t;
   }
   return '';
+}
+
+function getMimeExt(mime) {
+  if (mime.includes('mp4')) return 'mp4';
+  if (mime.includes('ogg')) return 'ogg';
+  return 'webm';
 }
 
 function updateFooter() {
@@ -620,7 +636,7 @@ function appendBlock(block) {
 
 // ── Transcription via Groq Whisper ────────────────────────────────────
 async function transcribeChunk(blob, segNum) {
-  if (blob.size < 8000) return;  // skip chunks under ~8KB (silence/too short)
+  if (blob.size < 5000) return;  // skip chunks under 5KB (silence/too short)
   procFill.classList.add('active');
 
   // Show interim placeholder
@@ -638,7 +654,8 @@ async function transcribeChunk(blob, segNum) {
       body: JSON.stringify({
         groq: true,
         audio: data,
-        mimeType: mime,
+        mimeType: mime || 'audio/webm',
+        ext: getMimeExt(mime || 'audio/webm'),
         language: 'es',
       })
     });
@@ -684,7 +701,17 @@ function enqueueChunk(blob) {
 // ── Recording ─────────────────────────────────────────────────────────
 async function startRecording() {
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    stream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      channelCount: 1,          // mono — Whisper works better with mono
+      sampleRate: 16000,        // 16kHz — Whisper's native sample rate
+      sampleSize: 16,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+    video: false
+  });
   } catch (err) {
     const msgs = {
       NotAllowedError: 'Permiso denegado — habilitá el micrófono',
@@ -705,6 +732,9 @@ async function startRecording() {
   animateWave(arr);
 
   const mime    = getSupportedMime();
+  console.log('Recording mime:', mime || '(browser default)');
+  // Show mime in status for diagnosis
+  setStatus('grabando · ' + (getMimeExt(mime).toUpperCase()), true);
   mediaRecorder = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
   currentChunks = []; chunkCounter = 0;
   chunkQueue    = Promise.resolve();
@@ -717,14 +747,21 @@ async function startRecording() {
     if (e.data?.size > 0) currentChunks.push(e.data);
   };
 
+  // Use timeslice on start — forces data every 250ms reliably on Android
+  // Then flush accumulated chunks every CHUNK_MS via interval
+  mediaRecorder.start(250);
+
   chunkInterval = setInterval(() => {
+    if (!isRecording) return;
+
+    // Request fresh data explicitly (belt + suspenders for Android)
+    try { mediaRecorder.requestData(); } catch {}
+
     if (!currentChunks.length) return;
     const blob = new Blob(currentChunks, { type: mime || 'audio/webm' });
     currentChunks = [];
     enqueueChunk(blob);
   }, CHUNK_MS);
-
-  mediaRecorder.start(1000);
 }
 
 async function stopRecording() {
